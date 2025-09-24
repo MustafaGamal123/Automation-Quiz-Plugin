@@ -626,7 +626,6 @@ if (file_exists($log_file)) {
         echo '<div class="stats-breakdown">';
         echo '<div class="stat-item"><strong>' . count($quiz_stats) . '</strong><br>Quizzes</div>';
         echo '<div class="stat-item"><strong>' . $total_flagged . '</strong><br>Flagged</div>';
-        echo '<div class="stat-item"><strong>' . count($warning_types) . '</strong><br>Types</div>';
         echo '<div class="stat-item"><strong>' . ($total_warnings - $total_flagged) . '</strong><br>Unflagged</div>';
         echo '</div>';
         echo '</div>';

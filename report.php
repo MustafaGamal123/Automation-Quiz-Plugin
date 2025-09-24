@@ -400,7 +400,53 @@ if (has_capability('quizaccess/proctoring:viewreport', $context, $USER->id) && $
 } else {
     echo $OUTPUT->notify(get_string('notpermissionreport', 'quizaccess_proctoring'), 'notifyproblem');
 }
+// معالجة طلب التقرير النصي
+if (optional_param('action', '', PARAM_ALPHA) === 'export_text_report') {
+    require_sesskey();
+    
+    if (file_exists($log_file)) {
+        $log_data = json_decode(file_get_contents($log_file), true) ?: [];
+        $report_lines = [];
+        
+        $quizname = optional_param('quizname', 'Unknown Quiz', PARAM_TEXT);
+        $courseid = optional_param('courseid', 0, PARAM_INT);
+        $cmid = optional_param('cmid', 0, PARAM_INT);
 
+        foreach ($log_data as $entry) {
+            // عرض فقط التحذيرات الخاصة بالكويز الحالي
+            if (($entry['cmid'] ?? 0) != $cmid) {
+                continue;
+            }
+            
+            $userid = $entry['user_id'] ?? 0;
+            $warning_type = $entry['type'] ?? 'Unknown Warning';
+            $timestamp = $entry['timestamp'] ?? 'Unknown Time';
+
+            // الحصول على بيانات الطالب
+            $user = $DB->get_record('user', ['id' => $userid], 'id, firstname, lastname, email');
+            $username = $user ? fullname($user) : 'Unknown Student';
+            $useremail = $user ? $user->email : 'unknown@example.com';
+
+            $report_lines[] = "The student named {$username}, with the email {$useremail}, received the warning '{$warning_type}' in the quiz titled '{$quizname}' on {$timestamp}.";
+        }
+
+        // إذا لم توجد تحذيرات
+        if (empty($report_lines)) {
+            $report_lines[] = "No warnings recorded for the quiz '{$quizname}'.";
+        }
+
+        // إعداد رأس التقرير
+        header('Content-Type: text/plain');
+        header('Content-Disposition: attachment; filename="proctoring_report_' . $quizname . '_' . date('Y-m-d') . '.txt"');
+        
+        echo implode("\n", $report_lines);
+        exit;
+    } else {
+        header('Content-Type: text/plain');
+        echo "No warnings recorded yet.";
+        exit;
+    }
+}
 if ($action === 'viewwarning' && $studentid && $cmid && $courseid) {
     $featuresimageurl = $OUTPUT->image_url('proctoring_pro_report_overview', 'quizaccess_proctoring');
     $profileimageurl = quizaccess_proctoring_get_image_url($studentid);
