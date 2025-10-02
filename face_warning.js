@@ -222,38 +222,38 @@
         }
     }
 
-    function playWarningSound() {
-        try {
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
+    // function playWarningSound() {
+    //     try {
+    //         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    //         const oscillator = audioContext.createOscillator();
+    //         const gainNode = audioContext.createGain();
             
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
+    //         oscillator.connect(gainNode);
+    //         gainNode.connect(audioContext.destination);
             
-            oscillator.type = 'sine';
-            oscillator.frequency.setValueAtTime(440, audioContext.currentTime);
-            oscillator.frequency.exponentialRampToValueAtTime(880, audioContext.currentTime + 0.2);
-            oscillator.frequency.exponentialRampToValueAtTime(440, audioContext.currentTime + 0.4);
-            oscillator.frequency.exponentialRampToValueAtTime(660, audioContext.currentTime + 0.6);
+    //         oscillator.type = 'sine';
+    //         oscillator.frequency.setValueAtTime(440, audioContext.currentTime);
+    //         oscillator.frequency.exponentialRampToValueAtTime(880, audioContext.currentTime + 0.2);
+    //         oscillator.frequency.exponentialRampToValueAtTime(440, audioContext.currentTime + 0.4);
+    //         oscillator.frequency.exponentialRampToValueAtTime(660, audioContext.currentTime + 0.6);
             
-            gainNode.gain.setValueAtTime(0.4, audioContext.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.1, audioContext.currentTime + 0.3);
-            gainNode.gain.exponentialRampToValueAtTime(0.3, audioContext.currentTime + 0.4);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.8);
+    //         gainNode.gain.setValueAtTime(0.4, audioContext.currentTime);
+    //         gainNode.gain.exponentialRampToValueAtTime(0.1, audioContext.currentTime + 0.3);
+    //         gainNode.gain.exponentialRampToValueAtTime(0.3, audioContext.currentTime + 0.4);
+    //         gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.8);
             
-            oscillator.start(audioContext.currentTime);
-            oscillator.stop(audioContext.currentTime + 0.8);
+    //         oscillator.start(audioContext.currentTime);
+    //         oscillator.stop(audioContext.currentTime + 0.8);
             
-            setTimeout(() => {
-                try {
-                    audioContext.close();
-                } catch (e) {}
-            }, 1000);
-        } catch (error) {
-            console.warn('Audio context error:', error);
-        }
-    }
+    //         setTimeout(() => {
+    //             try {
+    //                 audioContext.close();
+    //             } catch (e) {}
+    //         }, 1000);
+    //     } catch (error) {
+    //         console.warn('Audio context error:', error);
+    //     }
+    // }
 
     function getQuizId() {
         const match = window.location.href.match(/attempt\.php\?id=(\d+)/);
@@ -628,13 +628,13 @@
         
         lastWarningTime = currentTime;
         captureSuspiciousImage(alertType);
-        playWarningSound();
+      //  playWarningSound();
         
         createWarningElement();
        
         const messageElement = document.getElementById('warning-message');
         const messages = {
-            'face': 'Look directly at the camera',
+            'face': 'No face Detected',
             'movement': 'Avoid excessive movement',
             'face_turned': 'Please face the camera directly'
         };
@@ -922,7 +922,20 @@
         lastDetectionTime = currentTime;
        
         try {
-            const face = await detectFaceWithApi(videoElement);
+                    const simpleFacePresent = isFacePresentSimple(videoElement);
+        if (!simpleFacePresent) {
+            noFaceDetectedCount++;
+            if (noFaceDetectedCount >= maxNoFaceCount) {
+                showWarning('face');
+                noFaceDetectedCount = 0;
+            }
+                        requestAnimationFrame(detectFaceLoop);
+            return;
+        } else {
+            noFaceDetectedCount = 0;
+        }
+        const face = await detectFaceWithApi(videoElement);
+
            
             const monitorCanvas = document.getElementById('proctoring-monitor');
             if (monitorCanvas) {
@@ -1263,7 +1276,6 @@ function sendNotificationToServer(warningType) {
         userAgent: navigator.userAgent
     };
     
-    // إرسال إلى message.php
     fetch(M.cfg.wwwroot + '/mod/quiz/accessrule/proctoring/message.php', {
         method: 'POST',
         headers: {
@@ -1284,28 +1296,23 @@ function sendNotificationToServer(warningType) {
     });
 }
 
-// تعديل دالة showWarning لإضافة إرسال التنبيه
 function showWarning(alertType = 'face') {
     const currentTime = Date.now();
     if (currentTime - lastWarningTime < warningCooldown) return;
     
     lastWarningTime = currentTime;
     
-    // التقاط الصورة كما هو
     captureSuspiciousImage(alertType);
     
-    // تشغيل الصوت
-    playWarningSound();
+  //  playWarningSound();
     
-    // إرسال التنبيه للسيرفر (الجديد)
     sendNotificationToServer(alertType);
     
-    // باقي كود إظهار التحذير
     createWarningElement();
     
     const messageElement = document.getElementById('warning-message');
     const messages = {
-        'face': 'Look directly at the camera',
+        'face': 'No face Detected',
         'movement': 'Avoid excessive movement',
         'face_turned': 'Please face the camera directly'
     };
@@ -1318,14 +1325,83 @@ function showWarning(alertType = 'face') {
     }, 3000);
 }
 
-// دالة للتحقق من إعدادات المستخدم (اختيارية)
-function checkUserNotificationSettings() {
-    // يمكن إضافة فحص لإعدادات المستخدم هنا
-    // لتحديد ما إذا كان يريد استلام التنبيهات أم لا
-    return true;
+
+function isFacePresentSimple(videoEl, options = {}) {
+    try {
+        if (!videoEl || videoEl.readyState < 2) return false; // video not ready
+
+        const w = options.w || 160;
+        const h = options.h || 120;
+        const eyeDarkRatioThreshold = options.eyeDarkRatioThreshold || 0.15;
+        const minEyeSeparation = options.minEyeSeparation || Math.floor(w * 0.18); 
+        const maxEyeSeparation = options.maxEyeSeparation || Math.floor(w * 0.6);  
+        const upperFrac = options.upperFrac || 0.45; 
+
+        const tmp = document.createElement('canvas');
+        tmp.width = w;
+        tmp.height = h;
+        const ctx = tmp.getContext('2d');
+        ctx.drawImage(videoEl, 0, 0, w, h);
+
+        const img = ctx.getImageData(0, 0, w, h);
+        const data = img.data;
+        let total = 0, count = 0;
+        for (let i = 0; i < data.length; i += 4) {
+            total += (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+            count++;
+        }
+        const avg = total / count;
+        const threshold = Math.max(20, Math.min(120, avg * 0.85));
+
+        const topH = Math.floor(h * upperFrac);
+        const darkCounts = new Uint16Array(w);
+        for (let y = 0; y < topH; y++) {
+            for (let x = 0; x < w; x++) {
+                const idx = (y * w + x) * 4;
+                const gray = (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]);
+                if (gray < threshold) darkCounts[x]++;
+            }
+        }
+
+        const darkRatio = new Float32Array(w);
+        for (let x = 0; x < w; x++) {
+            darkRatio[x] = darkCounts[x] / topH;
+        }
+
+        const peaks = [];
+        const localWindow = Math.max(3, Math.floor(w * 0.03));
+        for (let x = 1; x < w - 1; x++) {
+            const val = darkRatio[x];
+            if (val > eyeDarkRatioThreshold) {
+                let isPeak = true;
+                for (let k = -localWindow; k <= localWindow; k++) {
+                    if (x + k < 0 || x + k >= w) continue;
+                    if (darkRatio[x + k] > val) { isPeak = false; break; }
+                }
+                if (isPeak) peaks.push({ x, val });
+            }
+        }
+
+        if (peaks.length < 2) return false;
+
+        peaks.sort((a, b) => b.val - a.val);
+        for (let i = 0; i < peaks.length; i++) {
+            for (let j = i + 1; j < peaks.length; j++) {
+                const sep = Math.abs(peaks[i].x - peaks[j].x);
+                if (sep >= minEyeSeparation && sep <= maxEyeSeparation) {
+                    if (peaks[i].val > eyeDarkRatioThreshold * 1.0 && peaks[j].val > eyeDarkRatioThreshold * 1.0) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    } catch (err) {
+        return false;
+    }
 }
 
-// دالة لإرسال تقرير شامل في نهاية الكويز
 function sendFinalReport() {
     if (!suspiciousImages.length) return;
     
@@ -1345,11 +1421,9 @@ function sendFinalReport() {
         completed_at: new Date().toISOString()
     };
     
-    // يمكن إرسال تقرير شامل منفصل
     console.log('Quiz session completed with suspicious activities:', reportData);
 }
 
-// إضافة استدعاء التقرير النهائي عند انتهاء الكويز
 function checkQuizFinished() {
     const isFinished = document.querySelector('.quiz-summary') !== null ||
                       document.querySelector('.quiz-finish-message') !== null ||

@@ -10,15 +10,12 @@ $quizname = optional_param('quizname', 'Unknown Quiz', PARAM_TEXT);
 $studentid = optional_param('studentid', 0, PARAM_INT);
 $format = optional_param('format', 'html', PARAM_ALPHA);
 
-// التحقق من الصلاحيات
 $context = context_system::instance();
 require_capability('mod/quiz:viewreports', $context);
 
-// مسار ملف السجلات
 $upload_dir = $CFG->dataroot . '/mod/quiz/accessrule/proctoring/uploads/warnings/';
 $log_file = $upload_dir . 'upload_log.json';
 
-// إذا كان الطلب لتصدير النص
 if ($format === 'text') {
     header('Content-Type: text/plain; charset=utf-8');
     header('Content-Disposition: attachment; filename="student_warnings_report.txt"');
@@ -31,21 +28,16 @@ if ($format === 'text') {
     exit;
 }
 
-// إعداد الصفحة
 $PAGE->set_url('/mod/quiz/accessrule/proctoring/student_warnings_report.php');
 $PAGE->set_context($context);
 
 
 echo $OUTPUT->header();
 
-// عرض التقرير
 display_warnings_report($log_file, $cmid, $studentid, $quizname);
 
 echo $OUTPUT->footer();
 
-/**
- * توليد تقرير التحذيرات
- */
 function generate_warnings_report($log_file, $cmid, $studentid) {
     global $DB;
     
@@ -64,7 +56,6 @@ function generate_warnings_report($log_file, $cmid, $studentid) {
     }
     
     foreach ($log_data as $entry) {
-        // التصفية حسب cmid و studentid إذا تم تحديدهما
         if ($cmid && ($entry['cmid'] ?? 0) != $cmid) {
             continue;
         }
@@ -77,7 +68,6 @@ function generate_warnings_report($log_file, $cmid, $studentid) {
         $warning_type = $entry['type'] ?? 'Unknown Warning';
         $timestamp = $entry['timestamp'] ?? 'Unknown Time';
         
-        // الحصول على بيانات المستخدم
         $user = $DB->get_record('user', ['id' => $userid]);
         if (!$user) {
             continue;
@@ -86,14 +76,12 @@ function generate_warnings_report($log_file, $cmid, $studentid) {
         $username = fullname($user);
         $useremail = $user->email;
         
-        // الحصول على اسم الكويز من بيانات السجل أو استخدام الاسم الافتراضي
         $quiz_name = 'Unknown Quiz';
         if (isset($entry['quizname'])) {
             $quiz_name = $entry['quizname'];
         }
         
-        // إنشاء السطر بالتنسيق المطلوب
-        $report_lines[] = "The student named {$username}, with the email {$useremail}, received the warning {$warning_type} in the quiz titled {$quiz_name}.";
+        $report_lines[] = "-The student named {$username}, with the email {$useremail}, received the warning {$warning_type} in the quiz titled {$quiz_name}.";
     }
     
     if (empty($report_lines)) {
@@ -103,9 +91,6 @@ function generate_warnings_report($log_file, $cmid, $studentid) {
     return $report_lines;
 }
 
-/**
- * عرض تقرير التحذيرات في واجهة HTML
- */
 function display_warnings_report($log_file, $cmid, $studentid, $quizname) {
     global $DB, $OUTPUT, $CFG;
     
@@ -113,7 +98,6 @@ function display_warnings_report($log_file, $cmid, $studentid, $quizname) {
     echo '<div class="report-header">';
     echo '<h2>Student Warnings Report</h2>';
     
-    // أزرار التصدير والتحكم
     echo '<div class="report-controls">';
     
     $export_text_url = new moodle_url('/mod/quiz/accessrule/proctoring/student_warnings_report.php', [
@@ -126,12 +110,10 @@ function display_warnings_report($log_file, $cmid, $studentid, $quizname) {
     echo '<i class="fa fa-download"></i> Export as Text File';
     echo '</a>';
     
-    echo '<a href="' . $CFG->wwwroot . '/mod/quiz/accessrule/proctoring/uploadwarning.php" class="btn btn-secondary">';
-    echo '<i class="fa fa-arrow-left"></i> Back to Detailed Report';
     echo '</a>';
     
-    echo '</div>'; // .report-controls
-    echo '</div>'; // .report-header
+    echo '</div>';
+    echo '</div>'; 
     
     if (!file_exists($log_file)) {
         echo '<div class="alert alert-info">No warnings data found.</div>';
@@ -145,7 +127,6 @@ function display_warnings_report($log_file, $cmid, $studentid, $quizname) {
         return;
     }
     
-    // إحصائيات سريعة
     $total_warnings = 0;
     $unique_students = [];
     $warning_types = [];
@@ -173,7 +154,6 @@ function display_warnings_report($log_file, $cmid, $studentid, $quizname) {
         $warning_types[$warning_type]++;
     }
     
-    // عرض الإحصائيات
     echo '<div class="report-stats">';
     echo '<div class="stat-card">';
     echo '<div class="stat-number">' . $total_warnings . '</div>';
@@ -185,13 +165,8 @@ function display_warnings_report($log_file, $cmid, $studentid, $quizname) {
     echo '<div class="stat-label">Affected Students</div>';
     echo '</div>';
     
-    echo '<div class="stat-card">';
-    echo '<div class="stat-number">' . count($warning_types) . '</div>';
-    echo '<div class="stat-label">Warning Types</div>';
-    echo '</div>';
-    echo '</div>';
+
     
-    // عرض التقرير الرئيسي
     echo '<div class="warnings-list">';
     
     $has_data = false;
@@ -219,7 +194,6 @@ function display_warnings_report($log_file, $cmid, $studentid, $quizname) {
         $username = fullname($user);
         $useremail = $user->email;
         
-        // استخدام اسم الكويز من البيانات إذا كان متوفراً
         $quiz_name = $quizname;
         if (isset($entry['quizname'])) {
             $quiz_name = $entry['quizname'];
@@ -228,7 +202,7 @@ function display_warnings_report($log_file, $cmid, $studentid, $quizname) {
         echo '<div class="warning-item ' . ($flagged ? 'flagged' : '') . '">';
         echo '<div class="warning-content">';
         echo '<p class="warning-text">';
-        echo 'The student named <strong>' . $username . '</strong>, ';
+        echo '-The student named <strong>' . $username . '</strong>, ';
         echo 'with the email <strong>' . $useremail . '</strong>, ';
         echo 'received the warning <span class="warning-type">' . $warning_type . '</span> ';
         echo 'in the quiz titled <strong>"' . $quiz_name . '"</strong>.';
@@ -245,7 +219,6 @@ function display_warnings_report($log_file, $cmid, $studentid, $quizname) {
             echo '<span class="note-indicator" title="' . s($note) . '"><i class="fa fa-sticky-note"></i> Has Note</span>';
         }
         
-        // رابط الصورة إذا كانت موجودة
         if (isset($entry['filename'])) {
             $image_url = new moodle_url('/mod/quiz/accessrule/proctoring/uploadwarning.php', [
                 'view' => $entry['filename'],
@@ -254,20 +227,19 @@ function display_warnings_report($log_file, $cmid, $studentid, $quizname) {
             echo '<a href="' . $image_url . '" target="_blank" class="image-link"><i class="fa fa-image"></i> View Image</a>';
         }
         
-        echo '</div>'; // .warning-meta
-        echo '</div>'; // .warning-content
-        echo '</div>'; // .warning-item
+        echo '</div>'; 
+        echo '</div>'; 
+        echo '</div>'; 
     }
     
     if (!$has_data) {
         echo '<div class="alert alert-warning">No warnings found for the selected criteria.</div>';
     }
     
-    echo '</div>'; // .warnings-list
-    echo '</div>'; // .student-warnings-report
+    echo '</div>'; 
+    echo '</div>'; 
 }
 
-// إضافة CSS مخصص
 echo '
 <style>
 .student-warnings-report {

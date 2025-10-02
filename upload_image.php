@@ -34,7 +34,6 @@ $PAGE->set_title(get_string('upload_image_title', 'quizaccess_proctoring'));
 
 $PAGE->set_heading(get_string('upload_image_heading', 'quizaccess_proctoring'));
 
-// Add navigation nodes.
 $PAGE->navbar->add(get_string('pluginname', 'quizaccess_proctoring'),
     new moodle_url('/admin/settings.php', ['section' => 'modsettingsquizcatproctoring']));
 $PAGE->navbar->add(get_string('users_list', 'quizaccess_proctoring'),
@@ -54,7 +53,6 @@ $userid = required_param('id', PARAM_INT);
 
 $mform = new image_upload_form();
 
-// Checking form.
 if ($mform->is_cancelled()) {
     redirect($CFG->wwwroot . '/mod/quiz/accessrule/proctoring/userslist.php',
             get_string('cancel_image_upload', 'quizaccess_proctoring'),
@@ -62,7 +60,6 @@ if ($mform->is_cancelled()) {
             \core\output\notification::NOTIFY_INFO);
 } else if ($data = $mform->get_data()) {
     require_sesskey();
-    // Check if the image has face.
     if ($data->face_image == 'null'  || empty($data->face_image )) {
         redirect($CFG->wwwroot . '/mod/quiz/accessrule/proctoring/userslist.php',
                 get_string('image_not_uploaded', 'quizaccess_proctoring'),
@@ -70,7 +67,6 @@ if ($mform->is_cancelled()) {
                 \core\output\notification::NOTIFY_ERROR);
     }
 
-    // Store or update $student.
     file_save_draft_area_files(
         $data->user_photo,
         $data->context_id,
@@ -83,7 +79,6 @@ if ($mform->is_cancelled()) {
         ]
     );
 
-    // Save the face image.
     $faceimagefile = new stdClass();
     $faceimagefile->filearea = 'face_image';
     $faceimagefile->component = 'quizaccess_proctoring';
@@ -96,11 +91,9 @@ if ($mform->is_cancelled()) {
     $fs = get_file_storage();
     $faceimagefile->filepath = file_correct_filepath($faceimagefile->filepath);
 
-    // For base64 to file.
     $faceimagedata = $data->face_image;
     list(, $faceimagedata) = explode(';', $faceimagedata);
 
-    // Get the face image url of admin uploaded image.
     $url = quizaccess_proctoring_geturl_of_faceimage($faceimagedata, $userid, $faceimagefile, $context, $fs);
     $facetablerecord = new stdClass();
     $facetablerecord->parent_type = 'admin_image';
@@ -113,7 +106,6 @@ if ($mform->is_cancelled()) {
         $record->photo_draft_id = $data->user_photo;
         $DB->update_record('quizaccess_proctoring_user_images', $record);
 
-        // Save face image in face table.
         $facetablerecord->parentid = $record->id;
 
         if ($DB->record_exists('quizaccess_proctoring_face_images',
@@ -166,7 +158,6 @@ if ($mform->is_cancelled()) {
 $context = context_system::instance();
 $username = $DB->get_record_select('user', 'id=:id', ['id' => $userid], 'firstname ,lastname');
 
-// Prepare image file.
 if (empty($user->id)) {
     $user = new stdClass;
     $user->id = $userid;

@@ -265,3 +265,4 @@ $string['warning_no_face'] = 'No face detected';
 $string['warning_face_mismatch'] = 'Face mismatch detected';
 $string['warning_mobile_phone'] = 'Mobile phone usage detected';
 $string['warning_another_person'] = 'Another person detected';
+$string['youmustagree'] = 'You Must agree to continue.';
