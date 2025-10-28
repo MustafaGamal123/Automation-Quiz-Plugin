@@ -23,7 +23,7 @@
  */
 
 defined('MOODLE_INTERNAL') || die();
-$string['accessdenied'] = 'Access Denied';
+$string['accessdenied'] = 'Access Denied';  
 $string['action_upload_image'] = 'Action';
 $string['actions'] = 'Actions';
 $string['additional_settings'] = 'Settings';

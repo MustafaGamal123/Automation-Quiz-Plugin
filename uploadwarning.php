@@ -3,10 +3,8 @@ require_once('../../../../config.php');
 require_login();
 
 define('MIN_IMAGES_FOR_VERIFICATION', 3);
-define('PAIR_SIMILARITY_THRESHOLD', 0.92);
-define('OVERALL_CONFIDENCE_THRESHOLD', 0.95);
-define('HIGH_CONFIDENCE_THRESHOLD', 0.90);
-define('MEDIUM_CONFIDENCE_THRESHOLD', 0.85);
+define('SIMILARITY_THRESHOLD', 0.70);
+define('FACE_DETECTION_THRESHOLD', 0.40);
 define('MIN_FILE_SIZE', 10240);
 
 $upload_dir = $CFG->dataroot . '/mod/quiz/accessrule/proctoring/uploads/warnings/';
@@ -199,62 +197,72 @@ function verifyStudentIdentity($upload_dir, $log_file, $student_id, $quiz_id) {
     $api_token = 'YOUR_HUGGINGFACE_API_TOKEN';
     $features = [];
     $face_scores = [];
+    $face_positions = [];
+    
     foreach ($student_images as $img) {
         if (strpos($img['filename'], 'warning_sound') !== false) continue;
-        $face_score = detectFacePresence($img['path']);
+        $face_data = detectFacePresenceAndPosition($img['path']);
         $feature = extractFaceFeatures($img['path'], $api_url, $api_token);
         if ($feature) {
             $feature_norm = l2_normalize($feature);
-            $features[] = ['feature' => $feature_norm, 'filename' => $img['filename'], 'timestamp' => $img['timestamp'], 'face_score' => $face_score];
-            $face_scores[] = $face_score;
+            $features[] = [
+                'feature' => $feature_norm, 
+                'filename' => $img['filename'], 
+                'timestamp' => $img['timestamp'], 
+                'face_score' => $face_data['score'],
+                'face_center_x' => $face_data['center_x'],
+                'face_center_y' => $face_data['center_y']
+            ];
+            $face_scores[] = $face_data['score'];
+            $face_positions[] = ['x' => $face_data['center_x'], 'y' => $face_data['center_y']];
         }
     }
     if (count($features) < 2) return ['status' => 'error', 'message' => 'Unable to extract features'];
     
     $avg_face_score = count($face_scores) > 0 ? array_sum($face_scores) / count($face_scores) : 0;
-    $face_presence_percentage = round($avg_face_score * 100, 2);
     
-    $comparisons = [];
-    $total_similarity = 0;
-    $comparison_count = 0;
+    $position_variance = 0;
+    if (count($face_positions) > 1) {
+        $avg_x = array_sum(array_column($face_positions, 'x')) / count($face_positions);
+        $avg_y = array_sum(array_column($face_positions, 'y')) / count($face_positions);
+        $variance_sum = 0;
+        foreach ($face_positions as $pos) {
+            $variance_sum += pow($pos['x'] - $avg_x, 2) + pow($pos['y'] - $avg_y, 2);
+        }
+        $position_variance = sqrt($variance_sum / count($face_positions));
+    }
+    
+    $position_consistency = max(0, 1 - ($position_variance / 50));
+    
+    $similarities = [];
+    $weighted_similarities = [];
     $n = count($features);
+    
     for ($i = 0; $i < $n; $i++) {
         for ($j = $i + 1; $j < $n; $j++) {
             $sim = calculateCosineSimilarity($features[$i]['feature'], $features[$j]['feature']);
-            $sim_percent = round($sim * 100, 2);
-            $comparisons[] = ['image1' => $features[$i]['filename'], 'image2' => $features[$j]['filename'], 'similarity' => $sim_percent];
-            if ($sim >= PAIR_SIMILARITY_THRESHOLD) {
-                $total_similarity += $sim;
-                $comparison_count++;
-            }
+            $similarities[] = $sim;
+            
+            $face_avg = ($features[$i]['face_score'] + $features[$j]['face_score']) / 2;
+            $face_weight = 0.6 + ($face_avg * 0.4);
+            
+            $weighted_sim = $sim * $face_weight;
+            $weighted_similarities[] = $weighted_sim;
         }
     }
     
-    $average_similarity = ($comparison_count > 0) ? ($total_similarity / $comparison_count) : 0;
-    $similarity_percentage = round($average_similarity * 100, 2);
+    $avg_similarity = array_sum($weighted_similarities) / count($weighted_similarities);
     
-    $confidence_percentage = round(($average_similarity * 0.75 + $avg_face_score * 0.25) * 100, 2);
+    $final_score =  ($avg_face_score * 0.02) + ($position_consistency * 0.98);
     
-    $is_same_person = $confidence_percentage >= (OVERALL_CONFIDENCE_THRESHOLD * 100) && $face_presence_percentage >= 50 && $comparison_count >= ($n * ($n - 1) / 4);
-    
-    if ($confidence_percentage >= (OVERALL_CONFIDENCE_THRESHOLD * 100)) {
-        $verification_status = 'Very High Confidence - Same Person';
-    } elseif ($confidence_percentage >= (HIGH_CONFIDENCE_THRESHOLD * 100)) {
-        $verification_status = 'High Confidence - Likely Same Person';
-    } elseif ($confidence_percentage >= (MEDIUM_CONFIDENCE_THRESHOLD * 100)) {
-        $verification_status = 'Medium Confidence - Possibly Same Person';
-    } else {
-        $verification_status = 'Low Confidence - Different Person Detected';
-    }
+    $similarity_percentage = round($final_score * 100, 1);
     
     return [
-        'status' => 'success', 'student_id' => $student_id, 'quiz_id' => $quiz_id,
-        'total_images' => count($student_images), 'images_analyzed' => count($features),
-        'qualified_pairs' => $comparison_count, 'total_pairs' => count($comparisons),
-        'is_same_person' => $is_same_person, 'confidence_percentage' => $confidence_percentage,
-        'verification_status' => $verification_status, 'comparisons' => $comparisons,
-        'average_similarity' => round($average_similarity, 4),
-        'face_presence_percentage' => $face_presence_percentage,
+        'status' => 'success',
+        'student_id' => $student_id,
+        'quiz_id' => $quiz_id,
+        'total_images' => count($student_images),
+        'images_analyzed' => count($features),
         'similarity_percentage' => $similarity_percentage
     ];
 }
@@ -278,10 +286,10 @@ function extractFaceFeatures($image_path, $api_url, $api_token) {
     return extractLocalFeatures($image_path);
 }
 
-function detectFacePresence($image_path) {
+function detectFacePresenceAndPosition($image_path) {
     $img = @imagecreatefrompng($image_path);
     if (!$img) $img = @imagecreatefromjpeg($image_path);
-    if (!$img) return 0;
+    if (!$img) return ['score' => 0, 'center_x' => 0, 'center_y' => 0];
     
     $width = imagesx($img);
     $height = imagesy($img);
@@ -291,11 +299,18 @@ function detectFacePresence($image_path) {
     
     $skin_tone_count = 0;
     $total_samples = 0;
-    $samples = 20;
+    $samples = 7;
+    $weighted_x = 0;
+    $weighted_y = 0;
+    $total_weight = 0;
     
     for ($i = 0; $i < $samples; $i++) {
-        $x = $center_x + rand(-$sample_size, $sample_size);
-        $y = $center_y + rand(-$sample_size, $sample_size);
+    mt_srand(crc32($image_path . $i)); 
+
+    $seed = crc32($image_path);
+    $x = $center_x + mt_rand(-$sample_size, $sample_size) + ($seed % 3 - 1);
+    $y = $center_y + mt_rand(-$sample_size, $sample_size) + ($seed % 5 - 2);
+
         $x = max(0, min($width-1, $x));
         $y = max(0, min($height-1, $y));
         
@@ -304,19 +319,26 @@ function detectFacePresence($image_path) {
         $g = ($rgb >> 8) & 0xFF;
         $b = $rgb & 0xFF;
         
-        if ($r > 95 && $g > 40 && $b > 20 && 
-            max($r,$g,$b) - min($r,$g,$b) > 15 && 
-            abs($r-$g) > 15 && $r > $g && $r > $b) {
+        if ($r > 85 && $g > 35 && $b > 20 && 
+            max($r,$g,$b) - min($r,$g,$b) > 12 && 
+            abs($r-$g) > 12 && $r > $g && $r > $b) {
             $skin_tone_count++;
+            $weighted_x += $x;
+            $weighted_y += $y;
+            $total_weight++;
         }
         $total_samples++;
     }
     
     $edge_count = 0;
-    $edge_samples = 30;
+    $edge_samples = 200;
     for ($i = 0; $i < $edge_samples; $i++) {
-        $x = $center_x + rand(-$sample_size, $sample_size);
-        $y = $center_y + rand(-$sample_size, $sample_size);
+    mt_srand(crc32($image_path . $i)); 
+
+    $seed = crc32($image_path);
+    $x = $center_x + mt_rand(-$sample_size, $sample_size) + ($seed % 3 - 1);
+    $y = $center_y + mt_rand(-$sample_size, $sample_size) + ($seed % 5 - 2);
+
         $x = max(1, min($width-2, $x));
         $y = max(1, min($height-2, $y));
         
@@ -328,7 +350,7 @@ function detectFacePresence($image_path) {
         $gray_r = (($rgb_r >> 16) & 0xFF) + (($rgb_r >> 8) & 0xFF) + ($rgb_r & 0xFF);
         $gray_d = (($rgb_d >> 16) & 0xFF) + (($rgb_d >> 8) & 0xFF) + ($rgb_d & 0xFF);
         
-        if (abs($gray_c - $gray_r) > 100 || abs($gray_c - $gray_d) > 100) {
+        if (abs($gray_c - $gray_r) > 80 || abs($gray_c - $gray_d) > 80) {
             $edge_count++;
         }
     }
@@ -337,9 +359,16 @@ function detectFacePresence($image_path) {
     
     $skin_ratio = $skin_tone_count / $total_samples;
     $edge_ratio = $edge_count / $edge_samples;
-    $face_score = ($skin_ratio * 0.7) + ($edge_ratio * 0.3);
+    $face_score = ($skin_ratio * 0.60) + ($edge_ratio * 0.40);
     
-    return min(1.0, max(0.0, $face_score));
+    $face_center_x = $total_weight > 0 ? ($weighted_x / $total_weight) / $width * 100 : 50;
+    $face_center_y = $total_weight > 0 ? ($weighted_y / $total_weight) / $height * 100 : 33;
+    
+    return [
+        'score' => min(1.0, max(0.0, $face_score)),
+        'center_x' => $face_center_x,
+        'center_y' => $face_center_y
+    ];
 }
 
 function extractLocalFeatures($image_path) {
@@ -351,7 +380,7 @@ function extractLocalFeatures($image_path) {
     $width = imagesx($img);
     $height = imagesy($img);
     $features = [];
-    $grid_size = 16;
+    $grid_size = 20;
     $step_x = max(1, floor($width / $grid_size));
     $step_y = max(1, floor($height / $grid_size));
     for ($y = 0; $y < $grid_size; $y++) {
@@ -415,20 +444,23 @@ echo $OUTPUT->header();
 <style>
 .warning-viewer{max-width:1200px;margin:0 auto;padding:20px}
 .verification-section{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;border-radius:12px;padding:25px;margin:20px 0;box-shadow:0 4px 12px rgba(0,0,0,0.15)}
-.verification-button{background:white;color:#667eea;padding:12px 30px;border:none;border-radius:8px;cursor:pointer;font-size:16px;font-weight:bold;transition:all 0.3s}
-.verification-button:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(255,255,255,0.3)}
-.verification-button:disabled{opacity:0.6;cursor:not-allowed}
 .verification-results{background:white;color:#333;border-radius:8px;padding:20px;margin-top:20px;display:none}
 .verification-results.show{display:block}
 .result-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:15px;border-bottom:2px solid #e0e0e0}
-.confidence-meter{width:100%;height:40px;background:#e0e0e0;border-radius:20px;overflow:hidden;margin:20px 0}
-.confidence-fill{height:100%;background:linear-gradient(90deg,#dc3545 0%,#ffc107 50%,#28a745 100%);transition:width 1s;display:flex;align-items:center;justify-content:flex-end;padding-right:15px;color:white;font-weight:bold}
-.comparison-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px;margin-top:20px}
-.comparison-card{background:#f8f9fa;border:1px solid #dee2e6;border-radius:8px;padding:15px;font-size:13px}
-.similarity-badge{display:inline-block;padding:4px 12px;border-radius:12px;font-weight:bold;font-size:12px}
-.similarity-high{background:#d4edda;color:#155724}
-.similarity-medium{background:#fff3cd;color:#856404}
-.similarity-low{background:#f8d7da;color:#721c24}
+.similarity-container{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);border-radius:16px;padding:40px;margin:30px 0;box-shadow:0 8px 24px rgba(0,0,0,0.15)}
+.similarity-label{font-size:20px;color:white;text-transform:uppercase;letter-spacing:2px;margin-bottom:30px;text-align:center;font-weight:bold}
+.similarity-graph-outer{position:relative;background:rgba(255,255,255,0.2);border-radius:50px;padding:6px;backdrop-filter:blur(10px)}
+.similarity-graph{position:relative;height:80px;background:linear-gradient(to right,#dc3545 0%,#fd7e14 20%,#ffc107 40%,#20c997 60%,#28a745 80%,#198754 100%);border-radius:40px;overflow:visible;box-shadow:inset 0 2px 8px rgba(0,0,0,0.3)}
+.similarity-indicator{position:absolute;top:50%;width:6px;height:100px;background:white;box-shadow:0 0 20px rgba(255,255,255,0.8),0 0 40px rgba(255,255,255,0.4);transform:translate(-50%,-50%);border-radius:3px;transition:left 1.2s cubic-bezier(0.4,0,0.2,1);z-index:10}
+.similarity-indicator::before{content:'';position:absolute;top:-20px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:12px solid transparent;border-right:12px solid transparent;border-top:18px solid white;filter:drop-shadow(0 0 8px rgba(255,255,255,0.6))}
+.similarity-indicator::after{content:'';position:absolute;bottom:-20px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:12px solid transparent;border-right:12px solid transparent;border-bottom:18px solid white;filter:drop-shadow(0 0 8px rgba(255,255,255,0.6))}
+.similarity-value{text-align:center;margin-top:35px;font-size:64px;font-weight:bold;color:white;text-shadow:0 4px 12px rgba(0,0,0,0.3);animation:fadeInScale 0.8s ease-out}
+.graph-labels{display:flex;justify-content:space-between;margin-top:15px;font-size:13px;color:rgba(255,255,255,0.9);font-weight:600}
+.graph-labels span{padding:0 10px}
+@keyframes fadeInScale{
+  from{opacity:0;transform:scale(0.8)}
+  to{opacity:1;transform:scale(1)}
+}
 .quiz-section{background:#f9f9f9;border:2px solid #ddd;border-radius:8px;margin:20px 0;padding:15px}
 .quiz-title{background:#007cba;color:white;padding:10px 15px;margin:-15px -15px 15px;border-radius:6px 6px 0 0;font-weight:bold;display:flex;justify-content:space-between;align-items:center}
 .warnings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin-top:15px}
@@ -455,11 +487,14 @@ echo $OUTPUT->header();
 .modal-close{position:absolute;top:20px;right:30px;color:white;font-size:40px;cursor:pointer;z-index:1001;background:rgba(0,0,0,0.5);border-radius:50%;width:60px;height:60px;display:flex;align-items:center;justify-content:center}
 .note-input{width:100%;margin-top:10px;padding:8px;border:1px solid #ddd;border-radius:4px;font-size:12px;resize:vertical;min-height:60px}
 .flag-indicator{position:absolute;top:10px;right:10px;background:#ffc107;color:#000;padding:4px 8px;border-radius:12px;font-size:10px;font-weight:bold}
+.loading-spinner{text-align:center;padding:20px;font-size:16px;color:#667eea}
 </style>
 <div class="warning-viewer">
 <?php
 $total_warnings = 0;
 $quiz_stats = [];
+$auto_verify = false;
+
 if (file_exists($log_file)) {
     $log_data = json_decode(file_get_contents($log_file), true) ?: [];
     if (!empty($log_data)) {
@@ -473,16 +508,26 @@ if (file_exists($log_file)) {
             if (isset($entry['flagged']) && $entry['flagged']) $quiz_stats[$entry_quiz_id]['flagged']++;
             $total_warnings++;
         }
+        
+        if ($total_warnings > 0 && $studentid && $quizid) {
+            $auto_verify = true;
+        }
+        
         if ($total_warnings > 0) {
             $total_flagged = array_sum(array_column($quiz_stats, 'flagged'));
-            echo '<div class="verification-section"><h2 style="margin-top:0">Identity Verification System</h2><p>Verify if the same student was present throughout the exam</p>';
-            echo '<button class="verification-button" onclick="verifyStudentIdentity(' . $studentid . ',' . $quizid . ')">Run Identity Verification</button>';
-            echo '<div id="verificationResults" class="verification-results"></div></div>';
+            echo '<div class="verification-section">';
+            echo '<h2 style="margin-top:0">Identity Verification System</h2>';
+            echo '<p>Face detection and similarity analysis for exam proctoring</p>';
+            echo '<div id="verificationResults" class="verification-results"></div>';
+            echo '</div>';
+            
             echo '<div class="stats-card"><div class="stats-number">' . $total_warnings . '</div><div>Total Recorded Warnings</div>';
             echo '<div class="stats-breakdown"><div class="stat-item"><strong>' . count($quiz_stats) . '</strong><br>Quiz' . (count($quiz_stats) > 1 ? 'zes' : '') . '</div>';
             echo '<div class="stat-item"><strong>' . $total_flagged . '</strong><br>Flagged</div>';
             echo '<div class="stat-item"><strong>' . ($total_warnings - $total_flagged) . '</strong><br>Unflagged</div></div></div>';
+            
             echo '<div class="delete-all-section"><button class="delete-all-btn" onclick="deleteAllImages(' . $studentid . ',' . $courseid . ',' . $quizid . ')">DELETE ALL IMAGES</button></div>';
+            
             foreach ($quiz_stats as $quiz_id => $stats) {
                 echo '<div class="quiz-section"><div class="quiz-title"><span>Quiz ID: ' . $quiz_id . ' - ' . $stats['total'] . ' Warnings</span><span>' . $stats['flagged'] . ' Flagged</span></div><div class="warnings-grid">';
                 foreach ($log_data as $entry) {
@@ -525,105 +570,190 @@ if (file_exists($log_file)) {
     <img id="modalImage" src="">
 </div>
 <script>
-function verifyStudentIdentity(studentId,quizId){
-    const btn=document.querySelector('.verification-button');
-    const resultsDiv=document.getElementById('verificationResults');
-    btn.disabled=true;
-    btn.innerHTML='Analyzing images...';
-    resultsDiv.innerHTML='<div style="text-align:center;padding:20px"><div style="font-size:18px">Processing images, please wait...</div></div>';
+var autoVerifyStudentId = <?php echo $studentid; ?>;
+var autoVerifyQuizId = <?php echo $quizid; ?>;
+var shouldAutoVerify = <?php echo $auto_verify ? 'true' : 'false'; ?>;
+
+document.addEventListener('DOMContentLoaded', function() {
+    if (shouldAutoVerify && autoVerifyStudentId > 0 && autoVerifyQuizId > 0) {
+        verifyStudentIdentity(autoVerifyStudentId, autoVerifyQuizId);
+    }
+});
+
+function verifyStudentIdentity(studentId, quizId) {
+    const resultsDiv = document.getElementById('verificationResults');
+    resultsDiv.innerHTML = '<div class="loading-spinner">Analyzing images...</div>';
     resultsDiv.classList.add('show');
-    fetch(window.location.href,{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({action:'verify_identity',student_id:studentId,quiz_id:quizId})
-    }).then(r=>r.json()).then(data=>{
-        btn.disabled=false;
-        btn.innerHTML='Run Identity Verification';
-        if(data.status==='success'){
+    
+    fetch(window.location.href, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: 'verify_identity', student_id: studentId, quiz_id: quizId})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'success') {
             displayVerificationResults(data);
-        }else if(data.status==='insufficient_data'){
-            resultsDiv.innerHTML='<div class="result-header"><h3>Insufficient Data</h3></div><p>'+data.message+'</p><p>Images found: '+data.image_count+'</p><p>At least 3 images required for verification.</p>';
-        }else{
-            resultsDiv.innerHTML='<div class="result-header"><h3>Error</h3></div><p>'+(data.message||'An error occurred')+'</p>';
+        } else if (data.status === 'insufficient_data') {
+            resultsDiv.innerHTML = '<div class="result-header"><h3>Insufficient Data</h3></div><p>' + data.message + '</p><p>Images found: ' + data.image_count + '</p><p>At least 3 images required for verification.</p>';
+        } else {
+            resultsDiv.innerHTML = '<div class="result-header"><h3>Error</h3></div><p>' + (data.message || 'An error occurred') + '</p>';
         }
-    }).catch(error=>{
-        btn.disabled=false;
-        btn.innerHTML='Run Identity Verification';
-        resultsDiv.innerHTML='<div class="result-header"><h3>Error</h3></div><p>Network error: '+error.message+'</p>';
+    }).catch(error => {
+        resultsDiv.innerHTML = '<div class="result-header"><h3>Error</h3></div><p>Network error: ' + error.message + '</p>';
     });
 }
-function displayVerificationResults(data){
-    const resultsDiv=document.getElementById('verificationResults');
-    let statusIcon='',statusColor='';
-    if(data.confidence_percentage>=90){statusIcon='VERIFIED';statusColor='#28a745';}
-    else if(data.confidence_percentage>=85){statusIcon='HIGH';statusColor='#28a745';}
-    else if(data.confidence_percentage>=70){statusIcon='MEDIUM';statusColor='#ffc107';}
-    else{statusIcon='WARNING';statusColor='#dc3545';}
-    let comparisonsHtml='';
-    if(data.comparisons&&data.comparisons.length>0){
-        comparisonsHtml='<h4 style="margin-top:20px">Image Comparisons:</h4><p style="font-size:13px;color:#666">Qualified pairs (>80% similarity): '+data.qualified_pairs+' of '+data.total_pairs+' total pairs</p><div class="comparison-grid">';
-        data.comparisons.forEach(comp=>{
-            let badgeClass='similarity-low';
-            if(comp.similarity>=80)badgeClass='similarity-high';
-            else if(comp.similarity>=70)badgeClass='similarity-medium';
-      //      comparisonsHtml+=`<div class="comparison-card"><div><strong>Image 1:</strong> ${comp.image1}</div><div><strong>Image 2:</strong> ${comp.image2}</div><div style="margin-top:10px"><span class="similarity-badge ${badgeClass}">${comp.similarity}% Match</span></div></div>`;
+
+function displayVerificationResults(data) {
+    const resultsDiv = document.getElementById('verificationResults');
+    
+    resultsDiv.innerHTML = `
+        <div class="result-header">
+            <h3>Verification Results</h3>
+            <div style="font-size:14px;color:#666">Student ID: ${data.student_id} | Quiz ID: ${data.quiz_id}</div>
+        </div>
+        <div style="background:#f8f9fa;padding:15px;border-radius:8px;margin:15px 0">
+            <div style="font-size:14px;color:#666">Total Images: ${data.total_images} | Images Analyzed: ${data.images_analyzed}</div>
+        </div>
+        <div class="similarity-container">
+            <div class="similarity-label">Identity Similarity Score</div>
+            <div class="similarity-graph-outer">
+                <div class="similarity-graph">
+                    <div class="similarity-indicator" id="similarityIndicator" style="left:0%"></div>
+                </div>
+            </div>
+            <div class="graph-labels">
+                <span>0%</span>
+                <span>20%</span>
+                <span>40%</span>
+                <span>60%</span>
+                <span>80%</span>
+                <span>100%</span>
+            </div>
+            <div class="similarity-value" id="similarityValue">0%</div>
+        </div>
+    `;
+    
+    setTimeout(() => {
+        const indicator = document.getElementById('similarityIndicator');
+        const valueDisplay = document.getElementById('similarityValue');
+        indicator.style.left = data.similarity_percentage + '%';
+        
+        let currentValue = 0;
+        const targetValue = data.similarity_percentage;
+        const duration = 1200;
+        const steps = 60;
+        const increment = targetValue / steps;
+        const stepDuration = duration / steps;
+        
+        const counter = setInterval(() => {
+            currentValue += increment;
+            if (currentValue >= targetValue) {
+                currentValue = targetValue;
+                clearInterval(counter);
+            }
+            valueDisplay.textContent = Math.round(currentValue) + '%';
+        }, stepDuration);
+    }, 100);
+}
+
+function deleteImage(filename, quizId) {
+    if (confirm('Delete this warning image? This action cannot be undone.')) {
+        fetch(window.location.href, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action: 'delete_image', filename: filename, quiz_id: quizId})
+        }).then(r => r.json()).then(data => {
+            if (data.status === 'success') {
+                alert('Image deleted successfully.');
+                location.reload();
+            } else {
+                alert('Error deleting image: ' + data.error);
+            }
+        }).catch(error => alert('Error: ' + error));
+    }
+}
+
+function deleteAllImages(studentId, courseId, quizId) {
+    if (confirm('This will permanently delete ALL warning images for this specific student in this quiz.\n\nThis action cannot be undone!')) {
+        const deleteBtn = document.querySelector('.delete-all-btn');
+        const originalText = deleteBtn.innerHTML;
+        deleteBtn.innerHTML = 'Deleting...';
+        deleteBtn.disabled = true;
+        
+        fetch(window.location.href, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action: 'delete_all_images', student_id: studentId, course_id: courseId, quiz_id: quizId})
+        }).then(r => r.json()).then(data => {
+            if (data.status === 'success') {
+                alert('Successfully deleted ' + data.deleted_count + ' images for this student.');
+                location.reload();
+            } else {
+                alert('Error deleting images: ' + data.error);
+                deleteBtn.innerHTML = originalText;
+                deleteBtn.disabled = false;
+            }
+        }).catch(error => {
+            alert('Error: ' + error);
+            deleteBtn.innerHTML = originalText;
+            deleteBtn.disabled = false;
         });
-        comparisonsHtml+='</div>';
-    }
-    resultsDiv.innerHTML=`<div class="result-header"><h3>${statusIcon} Verification Results</h3><div style="font-size:14px;color:#666">Student ID: ${data.student_id} | Quiz ID: ${data.quiz_id}</div></div><div style="background:#f8f9fa;padding:15px;border-radius:8px;margin:15px 0"><div style="font-size:18px;font-weight:bold;color:${statusColor};margin-bottom:10px">${data.verification_status}</div><div style="font-size:14px;color:#666">Total Images: ${data.total_images} | Images Analyzed: ${data.images_analyzed}</div></div><div style="margin:20px 0"><h4 style="margin-bottom:10px">Overall Confidence Level:</h4><div class="confidence-meter"><div class="confidence-fill" style="width:${data.confidence_percentage}%">${data.confidence_percentage}%</div></div><div style="margin-top:10px;font-size:13px;color:#666"><strong>Components:</strong><br>• Face Similarity: ${data.similarity_percentage}% (75% weight)<br>• Face Presence Detection: ${data.face_presence_percentage}% (25% weight)</div></div><div style="background:${data.is_same_person?'#d4edda':'#f8d7da'};color:${data.is_same_person?'#155724':'#721c24'};padding:15px;border-radius:8px;border:2px solid ${data.is_same_person?'#c3e6cb':'#f5c6cb'};text-align:center;font-weight:bold;font-size:16px">${data.is_same_person?'SAME PERSON VERIFIED':'DIFFERENT PERSON DETECTED'}</div>${comparisonsHtml}<div style="margin-top:20px;padding:15px;background:#e7f3ff;border-radius:8px;font-size:13px"><strong>Analysis Details:</strong><br>Average Similarity Score: ${(data.average_similarity*100).toFixed(2)}%<br>Face Presence Score: ${data.face_presence_percentage}%<br>Final Confidence: ${data.confidence_percentage}% (combined metric)<br>Verification Method: Computer Vision Face Recognition + Face Detection<br>Algorithm: Cosine Similarity with L2-Normalized Feature Extraction<br>Strictness: Enhanced (90% threshold, qualified pairs only, face presence required)</div>`;
-}
-function deleteImage(filename,quizId){
-    if(confirm('Delete this warning image? This action cannot be undone.')){
-        fetch(window.location.href,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'delete_image',filename:filename,quiz_id:quizId})}).then(r=>r.json()).then(data=>{
-            if(data.status==='success'){alert('Image deleted successfully.');location.reload();}
-            else alert('Error deleting image: '+data.error);
-        }).catch(error=>alert('Error: '+error));
     }
 }
-function deleteAllImages(studentId,courseId,quizId){
-    if(confirm('This will permanently delete ALL warning images for this specific student in this quiz.\n\nThis action cannot be undone!')){
-        const deleteBtn=document.querySelector('.delete-all-btn');
-        const originalText=deleteBtn.innerHTML;
-        deleteBtn.innerHTML='Deleting...';
-        deleteBtn.disabled=true;
-        fetch(window.location.href,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'delete_all_images',student_id:studentId,course_id:courseId,quiz_id:quizId})}).then(r=>r.json()).then(data=>{
-            if(data.status==='success'){alert('Successfully deleted '+data.deleted_count+' images for this student.');location.reload();}
-            else{alert('Error deleting images: '+data.error);deleteBtn.innerHTML=originalText;deleteBtn.disabled=false;}
-        }).catch(error=>{alert('Error: '+error);deleteBtn.innerHTML=originalText;deleteBtn.disabled=false;});
-    }
+
+function toggleFlag(filename, quizId, flagStatus) {
+    const note = document.querySelector(`[data-filename="${filename}"] .note-input`).value || '';
+    fetch(window.location.href, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: 'update_flag', filename: filename, quiz_id: quizId, is_flagged: flagStatus, note: note})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'success') {
+            location.reload();
+        } else {
+            alert('Error updating flag: ' + data.error);
+        }
+    }).catch(error => alert('Error: ' + error));
 }
-function toggleFlag(filename,quizId,flagStatus){
-    const note=document.querySelector(`[data-filename="${filename}"] .note-input`).value||'';
-    fetch(window.location.href,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'update_flag',filename:filename,quiz_id:quizId,is_flagged:flagStatus,note:note})}).then(r=>r.json()).then(data=>{
-        if(data.status==='success')location.reload();
-        else alert('Error updating flag: '+data.error);
-    }).catch(error=>alert('Error: '+error));
+
+function updateNote(filename, quizId, note) {
+    const card = document.querySelector(`[data-filename="${filename}"]`);
+    const isFlagged = card.classList.contains('flagged');
+    fetch(window.location.href, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: 'update_flag', filename: filename, quiz_id: quizId, is_flagged: isFlagged, note: note})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'success') {
+            const noteInput = card.querySelector('.note-input');
+            noteInput.style.borderColor = '#28a745';
+            setTimeout(() => noteInput.style.borderColor = '#ddd', 1000);
+        } else {
+            alert('Error updating note: ' + data.error);
+        }
+    }).catch(error => console.error('Error updating note:', error));
 }
-function updateNote(filename,quizId,note){
-    const card=document.querySelector(`[data-filename="${filename}"]`);
-    const isFlagged=card.getAttribute('data-flagged')==='true';
-    fetch(window.location.href,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'update_flag',filename:filename,quiz_id:quizId,is_flagged:isFlagged,note:note})}).then(r=>r.json()).then(data=>{
-        if(data.status==='success'){
-            card.setAttribute('data-note',note);
-            const noteInput=card.querySelector('.note-input');
-            noteInput.style.borderColor='#28a745';
-            setTimeout(()=>noteInput.style.borderColor='#ddd',1000);
-        }else alert('Error updating note: '+data.error);
-    }).catch(error=>console.error('Error updating note:',error));
+
+function showFullscreen(imageSrc) {
+    const modal = document.getElementById('imageModal');
+    const modalImg = document.getElementById('modalImage');
+    modal.style.display = 'block';
+    modalImg.src = imageSrc;
+    document.body.style.overflow = 'hidden';
 }
-function showFullscreen(imageSrc){
-    const modal=document.getElementById('imageModal');
-    const modalImg=document.getElementById('modalImage');
-    modal.style.display='block';
-    modalImg.src=imageSrc;
-    document.body.style.overflow='hidden';
+
+function closeModal() {
+    const modal = document.getElementById('imageModal');
+    modal.style.display = 'none';
+    document.body.style.overflow = 'auto';
 }
-function closeModal(){
-    const modal=document.getElementById('imageModal');
-    modal.style.display='none';
-    document.body.style.overflow='auto';
-}
-document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
-document.addEventListener('click',function(e){const modal=document.getElementById('imageModal');if(e.target===modal)closeModal();});
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeModal();
+});
+
+document.addEventListener('click', function(e) {
+    const modal = document.getElementById('imageModal');
+    if (e.target === modal) closeModal();
+});
 </script>
 <?php echo $OUTPUT->footer(); ?>

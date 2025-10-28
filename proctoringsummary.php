@@ -82,12 +82,12 @@ $quizsummarysql .= " ORDER BY $sortsql $direction";
 $quizsummary = $DB->get_records_sql($quizsummarysql, ['courseid' => $course->id]);
 
 $table = new flexible_table('quizaccess_proctoring_summary_table');
-$table->define_columns(['quiztitle', 'numberofimages', 'action']);
+$table->define_columns(['quiztitle', 'action']);
 $table->define_headers([
     get_string('quiztitle', 'quizaccess_proctoring'),
-    get_string('numberofimages', 'quizaccess_proctoring'),
     get_string('action'),
 ]);
+
 
 $table->define_baseurl($PAGE->url);
 $table->set_attribute('class', 'generaltable generalbox');
@@ -100,7 +100,6 @@ foreach ($quizsummary as $quiz) {
     if ($course->id == $quiz->courseid) {
         $row = [];
         $row[] = $quiz->name;
-        $row[] = $quiz->camshotcount;
 
         $actionmenu = new action_menu();
 

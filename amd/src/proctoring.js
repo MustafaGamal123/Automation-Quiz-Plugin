@@ -1,8 +1,14 @@
 // @SuppressWarnings("javascript:S4144");
-let isCameraAllowed = false;
+window.isCameraAllowed = window.isCameraAllowed || false;
 
 define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
     function($, Ajax, Notification, Str) {
+        
+        // Track if face detection notification was shown
+        let faceNotFoundShown = false;
+        let lastFaceDetectionTime = 0;
+        const FACE_NOTIFICATION_COOLDOWN = 10000; // Show notification max once every 10 seconds
+        
         const loadStrings = async function() {
             const stringkeys = [
                 {key: 'facenotfoundoncam', component: 'quizaccess_proctoring'},
@@ -24,7 +30,7 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                 };
             } catch (error) {
                 Notification.exception(error);
-                return {}; // Return an empty object in case of an error.
+                return {};
             }
         };
 
@@ -40,23 +46,13 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
             });
         });
 
-        /**
-         * Function hideButtons
-         */
         async function hideButtons() {
             const strings = await loadStrings();
             $('.mod_quiz-next-nav').prop("disabled", true);
             $('.submitbtns').html(`<p class="text text-red red">${strings.enablewebcamerabeforesubmitting}</p>`);
         }
 
-        const showNotification = (message, type) => {
-            removeNotifications();
-            Notification.addNotification({
-                message,
-                type
-            });
-        };
-
+        // Modified: Removed notification functions - no face detection notifications
         const removeNotifications = () => {
             try {
                 const alertElements = document.getElementsByClassName('alert');
@@ -70,16 +66,13 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
             }
         };
 
-        let firstcalldelay = 3000; // 3 seconds after the page load.
-        let takepicturedelay = 30000; // 30 seconds.
+        let firstcalldelay = 3000;
+        let takepicturedelay = 30000;
 
-        // Function to draw image from the box data.
         const extractFaceFromBox = async(imageRef, box, croppedImage) => {
             const regionsToExtract = [
-                // eslint-disable-next-line no-undef
                 new faceapi.Rect(box.x, box.y, box.width, box.height)
             ];
-            // eslint-disable-next-line no-undef
             let faceImages = await faceapi.extractFaces(imageRef, regionsToExtract);
 
             if (faceImages.length !== 0) {
@@ -90,11 +83,16 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
         };
 
         const detectface = async(input, croppedImage) => {
-            // eslint-disable-next-line no-undef
             const output = await faceapi.detectAllFaces(input);
             if (output.length !== 0) {
                 let detections = output[0].box;
                 await extractFaceFromBox(input, detections, croppedImage);
+                
+                // Reset notification flag when face is found
+                if (faceNotFoundShown) {
+                    removeNotifications();
+                    faceNotFoundShown = false;
+                }
             }
         };
 
@@ -102,11 +100,10 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
             async setup(props, modelurl) {
                 const strings = await loadStrings();
                 if (modelurl !== null) {
-                    // eslint-disable-next-line no-undef
                     await faceapi.nets.ssdMobilenetv1.loadFromUri(modelurl);
                 }
                 takepicturedelay = props.camshotdelay;
-                // Skip for summary page.
+                
                 if (document.getElementById("page-mod-quiz-summary") !== null &&
                     document.getElementById("page-mod-quiz-summary").innerHTML.length) {
                     return false;
@@ -117,7 +114,7 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                 }
 
                 const width = props.image_width;
-                let height = 0; // This will be computed based on the input stream.
+                let height = 0;
                 let streaming = false;
                 let data = null;
 
@@ -132,13 +129,12 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                 const photo = document.getElementById('photo');
 
                 const makeElementDraggable = (element) => {
-                let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+                    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
 
                     const dragMouseDown = (e) => {
                         e.preventDefault();
                         pos3 = e.clientX;
                         pos4 = e.clientY;
-
                         document.onmouseup = closeDragElement;
                         document.onmousemove = elementDrag;
                     };
@@ -149,7 +145,6 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                         pos2 = pos4 - e.clientY;
                         pos3 = e.clientX;
                         pos4 = e.clientY;
-
                         element.style.top = element.offsetTop - pos2 + "px";
                         element.style.left = element.offsetLeft - pos1 + "px";
                         element.style.bottom = element.offsetTop - pos2 + 200 + "px";
@@ -183,25 +178,26 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                         photo.setAttribute('src', data);
                         props.webcampicture = data;
 
-                        let croppedImage = $('#cropimg');
+                        let croppedImage = $('#cropimg')[0];
+                        let faceFound = 0;
+                        let faceImage = "";
+                        
                         if (modelurl !== null) {
                             await detectface(photo, croppedImage);
-                        }
-                        let faceFound;
-                        let faceImage;
-                        if (croppedImage.src) {
-                            if (modelurl !== null) {
+                            
+                            if (croppedImage.src && croppedImage.src !== window.location.href) {
+                                // Face found
                                 removeNotifications();
+                                faceNotFoundShown = false;
+                                faceFound = 1;
+                                faceImage = croppedImage.src;
+                            } else {
+                                // Face not found - NO NOTIFICATION, just set values
+                                faceFound = 0;
+                                faceImage = "";
                             }
-                            faceFound = 1;
-                            faceImage = croppedImage.src;
-                        } else {
-                            if (modelurl !== null) {
-                                showNotification(strings.facenotfoundoncam, 'error');
-                            }
-                            faceFound = 0;
-                            faceImage = "";
                         }
+
                         var wsfunction = 'quizaccess_proctoring_send_camshot';
                         var params = {
                             'courseid': props.courseid,
@@ -220,7 +216,7 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                         };
 
                         Ajax.call([request])[0].done(function(res) {
-                            if (res.warnings.length >= 1) {
+                            if (res.warnings && res.warnings.length >= 1) {
                                 if (video) {
                                     Notification.addNotification({
                                         message: strings.wrongduringtakingimage,
@@ -235,7 +231,6 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                 };
 
                 navigator.mediaDevices.getUserMedia({video: true, audio: false})
-                    // eslint-disable-next-line promise/always-return
                     .then(function(stream) {
                         video.srcObject = stream;
                         video.play();
@@ -249,8 +244,6 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                     video.addEventListener('canplay', function() {
                         if (!streaming) {
                             height = video.videoHeight / (video.videoWidth / width);
-                            // Firefox currently has a bug where the height can't be read from.
-                            // The video, so we will make assumptions if this happens.
                             if (isNaN(height)) {
                                 height = width / (4 / 3);
                             }
@@ -262,11 +255,11 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                         }
                     }, false);
 
-                    // Allow to click picture.
                     video.addEventListener('click', async function(ev) {
                         await takepicture();
                         ev.preventDefault();
                     }, false);
+                    
                     setTimeout(takepicture, firstcalldelay);
                     setInterval(takepicture, takepicturedelay);
                 } else {
@@ -275,8 +268,9 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
 
                 return true;
             },
+            
             async init(props) {
-                let height = 0; // This will be computed based on the input stream.
+                let height = 0;
                 let streaming = false;
                 let video = null;
                 let canvas = null;
@@ -284,9 +278,6 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                 let data = null;
                 const width = props.image_width;
 
-                /**
-                 * Startup
-                 */
                 async function startup() {
                     video = document.getElementById('video');
                     canvas = document.getElementById('canvas');
@@ -294,7 +285,6 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
 
                     if (video) {
                         navigator.mediaDevices.getUserMedia({video: true, audio: false})
-                            // eslint-disable-next-line promise/always-return
                             .then(function(stream) {
                                 video.srcObject = stream;
                                 video.play();
@@ -302,7 +292,7 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
 
                                 Notification.addNotification({
                                     message: props.cameraallow,
-                                    type: 'success' // Success notification type.
+                                    type: 'success'
                                 });
                             })
                             .catch(function() {
@@ -316,8 +306,6 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                         video.addEventListener('canplay', function() {
                             if (!streaming) {
                                 height = video.videoHeight / (video.videoWidth / width);
-                                // Firefox currently has a bug where the height can't be read from.
-                                // The video, so we will make assumptions if this happens.
                                 if (isNaN(height)) {
                                     height = width / (4 / 3);
                                 }
@@ -329,7 +317,6 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                             }
                         }, false);
 
-                        // Allow to click picture.
                         video.addEventListener('click', async function(ev) {
                             await takepicture();
                             ev.preventDefault();
@@ -340,15 +327,11 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                     clearphoto();
                 }
 
-                /**
-                 * Clearphoto
-                 */
                 function clearphoto() {
                     if (isCameraAllowed) {
                         var context = canvas.getContext('2d');
                         context.fillStyle = "#AAA";
                         context.fillRect(0, 0, canvas.width, canvas.height);
-
                         data = canvas.toDataURL('image/png');
                         photo.setAttribute('src', data);
                     } else {
@@ -356,14 +339,10 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                     }
                 }
 
-                /**
-                 * Takepicture
-                 */
                 async function takepicture() {
-
                     const strings = await loadStrings();
-
                     var context = canvas.getContext('2d');
+                    
                     if (width && height) {
                         $(document).trigger("screenshoottaken");
                         canvas.width = width;
@@ -387,21 +366,19 @@ define(['jquery', 'core/ajax', 'core/notification', 'core/str'],
                         };
 
                         Ajax.call([request])[0].done(async function(res) {
-                            if (res.warnings.length >= 1) {
+                            if (res.warnings && res.warnings.length >= 1) {
                                 Notification.addNotification({
                                     message: strings.wrongduringtakingscreenshot,
                                     type: 'error'
                                 });
                             }
                         }).fail(Notification.exception);
-
                     } else {
                         clearphoto();
                     }
                 }
 
                 await startup();
-
                 return data;
             }
         };

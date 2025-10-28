@@ -10,9 +10,9 @@
     let canvasContext = null;
     let faceDetectionActive = false;
     let previousFacePosition = null;
-    let movementThreshold = 57;
+    let movementThreshold = 47;
     let noFaceDetectedCount = 0;
-    let maxNoFaceCount = 11;
+    let maxNoFaceCount = 10;
     let faceHistory = [];
     let historySize = 10; 
     let suspiciousActivityLog = [];
@@ -49,7 +49,7 @@
             }
             
             const script = document.createElement('script');
-            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/face-api.js/0.22.2/face-api.min.js';
+            script.src = 'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js';
             script.onload = () => {
                 faceApiLoaded = true;
                 resolve();
@@ -67,13 +67,14 @@
         if (!faceApiLoaded || !window.faceapi) return false;
         
         try {
-            const modelPath = '/mod/quiz/accessrule/proctoring/models';
-            
-            await Promise.all([
-                faceapi.nets.tinyFaceDetector.loadFromUri(modelPath).catch(() => null),
-                faceapi.nets.faceLandmark68Net.loadFromUri(modelPath).catch(() => null),
-                faceapi.nets.faceRecognitionNet.loadFromUri(modelPath).catch(() => null)
-            ]);
+        const modelBasePath = '/mod/quiz/accessrule/proctoring/models';
+
+        await Promise.all([
+            faceapi.nets.tinyFaceDetector.loadFromUri(`${modelBasePath}/tiny_face_detector`),
+            faceapi.nets.faceLandmark68Net.loadFromUri(`${modelBasePath}/face_landmark_68`),
+            faceapi.nets.faceRecognitionNet.loadFromUri(`${modelBasePath}/face_recognition`)
+        ]);
+
             
             faceApiModels = true;
             return true;
@@ -911,84 +912,91 @@
         }
     }
 
-    async function detectFaceLoop() {
-        if (!faceDetectionActive || !videoElement) return;
-       
-        const currentTime = Date.now();
-        if (currentTime - lastDetectionTime < detectionCooldown) {
-            requestAnimationFrame(detectFaceLoop);
-            return;
-        }
-        lastDetectionTime = currentTime;
-       
-        try {
-                    const simpleFacePresent = isFacePresentSimple(videoElement);
+async function detectFaceLoop() {
+    if (!faceDetectionActive || !videoElement) return;
+   
+    const currentTime = Date.now();
+    if (currentTime - lastDetectionTime < detectionCooldown) {
+        requestAnimationFrame(detectFaceLoop);
+        return;
+    }
+    lastDetectionTime = currentTime;
+   
+    try {
+        // Fast check: is there ANY face-like structure?
+        const simpleFacePresent = isFacePresentSimple(videoElement);
         if (!simpleFacePresent) {
             noFaceDetectedCount++;
             if (noFaceDetectedCount >= maxNoFaceCount) {
                 showWarning('face');
                 noFaceDetectedCount = 0;
             }
-                        requestAnimationFrame(detectFaceLoop);
+            requestAnimationFrame(detectFaceLoop);
             return;
         } else {
             noFaceDetectedCount = 0;
         }
+        
+        // Detailed face detection with Face-API
         const face = await detectFaceWithApi(videoElement);
-
+        
+        const monitorCanvas = document.getElementById('proctoring-monitor');
+        if (monitorCanvas) {
+            const monitorCtx = monitorCanvas.getContext('2d');
+            monitorCtx.drawImage(videoElement, 0, 0, 320, 240);
            
-            const monitorCanvas = document.getElementById('proctoring-monitor');
-            if (monitorCanvas) {
-                const monitorCtx = monitorCanvas.getContext('2d');
-                monitorCtx.drawImage(videoElement, 0, 0, 320, 240);
-               
-                if (face) {
-                    noFaceDetectedCount = 0;
-                    faceTurnedAwayCount = 0;
-                    
-                    if (face.faceApiDetection && face.orientation && face.orientation.turned) {
-                        faceTurnedAwayCount++;
-                        if (faceTurnedAwayCount >= maxFaceTurnedCount) {
-                            showWarning('face_turned');
-                            faceTurnedAwayCount = 0;
-                        }
-                    } else {
-                        checkMovement(face);
-                    }
-                    
-                    if (face.width && face.height) {
-                        monitorCtx.strokeStyle = '#00ff00';
-                        monitorCtx.lineWidth = 2;
-                        monitorCtx.strokeRect(
-                            face.x * (320 / videoElement.videoWidth), 
-                            face.y * (240 / videoElement.videoHeight),
-                            face.width * (320 / videoElement.videoWidth), 
-                            face.height * (240 / videoElement.videoHeight)
-                        );
+            if (face) {
+                noFaceDetectedCount = 0;
+                // ✅ DON'T reset faceTurnedAwayCount here!
+                
+                // Check if face is turned away
+                if (face.faceApiDetection && face.orientation && face.orientation.turned) {
+                    faceTurnedAwayCount++;
+                    if (faceTurnedAwayCount >= maxFaceTurnedCount) {
+                        showWarning('face_turned');
+                        faceTurnedAwayCount = 0;
                     }
                 } else {
-                    noFaceDetectedCount++;
-                    if (noFaceDetectedCount >= maxNoFaceCount) {
-                        showWarning('face');
-                    }
+                    // ✅ Reset counter ONLY when face is NOT turned
+                    faceTurnedAwayCount = 0;
+                    checkMovement(face);
+                }
+                
+                // Draw face detection box
+                if (face.width && face.height) {
+                    monitorCtx.strokeStyle = '#00ff00';
+                    monitorCtx.lineWidth = 2;
+                    monitorCtx.strokeRect(
+                        face.x * (320 / videoElement.videoWidth), 
+                        face.y * (240 / videoElement.videoHeight),
+                        face.width * (320 / videoElement.videoWidth), 
+                        face.height * (240 / videoElement.videoHeight)
+                    );
+                }
+            } else {
+                noFaceDetectedCount++;
+                if (noFaceDetectedCount >= maxNoFaceCount) {
+                    showWarning('face');
                 }
             }
-            
-            detectionFrameBuffer.push(Date.now());
-            if (detectionFrameBuffer.length > MAX_FRAME_BUFFER) {
-                detectionFrameBuffer.shift();
-            }
-            
-            if (currentTime - lastMemoryCleanup > MEMORY_CLEANUP_INTERVAL) {
-                performMemoryCleanup();
-            }
-            
-        } catch (error) {
-            console.warn('Face detection error:', error);
         }
-       
-        requestAnimationFrame(detectFaceLoop);
+        
+        // Memory management
+        detectionFrameBuffer.push(Date.now());
+        if (detectionFrameBuffer.length > MAX_FRAME_BUFFER) {
+            detectionFrameBuffer.shift();
+        }
+        
+        if (currentTime - lastMemoryCleanup > MEMORY_CLEANUP_INTERVAL) {
+            performMemoryCleanup();
+        }
+        
+    } catch (error) {
+        console.warn('Face detection error:', error);
     }
+   
+    requestAnimationFrame(detectFaceLoop);
+}
 
     function stopFaceDetection() {
         faceDetectionActive = false;
@@ -1276,24 +1284,7 @@ function sendNotificationToServer(warningType) {
         userAgent: navigator.userAgent
     };
     
-    fetch(M.cfg.wwwroot + '/mod/quiz/accessrule/proctoring/message.php', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload)
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.status === 'success') {
-            console.log(`Notification sent: ${warningType} - ${data.sent_count} recipients`);
-        } else {
-            console.warn('Notification failed:', data.error);
-        }
-    })
-    .catch(error => {
-        console.error('Notification error:', error);
-    });
+
 }
 
 function showWarning(alertType = 'face') {

@@ -190,7 +190,6 @@ if (has_capability('quizaccess/proctoring:viewreport', $context, $USER->id) && $
 
         $has_warning = 'No';
 
-        // فحص تحذيرات FM للكويز المحدد فقط
         $fmCount = $DB->count_records('quizaccess_proctoring_fm_warnings', [
             'courseid' => $courseid,
             'quizid' => $cmid,
@@ -206,7 +205,6 @@ if (has_capability('quizaccess/proctoring:viewreport', $context, $USER->id) && $
             ]);
         }
 
-        // فحص التحذيرات المرفوعة للكويز المحدد فقط
         $uploadWarningCount = 0;
         $upload_dir = $CFG->dataroot . '/mod/quiz/accessrule/proctoring/uploads/warnings/';
         $log_file = $upload_dir . 'upload_log.json';
@@ -239,13 +237,6 @@ if (has_capability('quizaccess/proctoring:viewreport', $context, $USER->id) && $
             'studentid' => $info->studentid,
             'reportid' => $info->reportid,
         ]);
-
-        $viewaction = new action_menu_link_secondary(
-            $viewurl,
-            new pix_icon('e/insert_edit_image', get_string('viewimages', 'quizaccess_proctoring'), 'moodle'),
-            get_string('viewimages', 'quizaccess_proctoring')
-        );
-        $actionmenu->add($viewaction);
 
         if ($action === 'viewwarnings' && $studentid && $cmid && $courseid) {
             $warningurl = new moodle_url('/mod/quiz/accessrule/proctoring/uploadwarning.php', [
@@ -400,7 +391,6 @@ if (has_capability('quizaccess/proctoring:viewreport', $context, $USER->id) && $
     echo $OUTPUT->notify(get_string('notpermissionreport', 'quizaccess_proctoring'), 'notifyproblem');
 }
 
-// معالجة طلب التقرير النصي - مع فلترة الكويز المحدد
 if (optional_param('action', '', PARAM_ALPHA) === 'export_text_report') {
     require_sesskey();
     
@@ -414,7 +404,6 @@ if (optional_param('action', '', PARAM_ALPHA) === 'export_text_report') {
         $quizname = optional_param('quizname', 'Unknown Quiz', PARAM_TEXT);
 
         foreach ($log_data as $entry) {
-            // عرض فقط التحذيرات الخاصة بالكويز الحالي
             if (($entry['cmid'] ?? 0) != $cmid) {
                 continue;
             }
@@ -423,7 +412,6 @@ if (optional_param('action', '', PARAM_ALPHA) === 'export_text_report') {
             $warning_type = $entry['type'] ?? 'Unknown Warning';
             $timestamp = $entry['timestamp'] ?? 'Unknown Time';
 
-            // الحصول على بيانات الطالب
             $user = $DB->get_record('user', ['id' => $userid], 'id, firstname, lastname, email');
             $username = $user ? fullname($user) : 'Unknown Student';
             $useremail = $user ? $user->email : 'unknown@example.com';
@@ -431,12 +419,10 @@ if (optional_param('action', '', PARAM_ALPHA) === 'export_text_report') {
             $report_lines[] = "The student named {$username}, with the email {$useremail}, received the warning '{$warning_type}' in the quiz titled '{$quizname}' on {$timestamp}.";
         }
 
-        // إذا لم توجد تحذيرات للكويز المحدد
         if (empty($report_lines)) {
             $report_lines[] = "No warnings recorded for the quiz '{$quizname}'.";
         }
 
-        // إعداد رأس التقرير
         header('Content-Type: text/plain');
         header('Content-Disposition: attachment; filename="proctoring_report_' . $quizname . '_' . date('Y-m-d') . '.txt"');
         
@@ -449,13 +435,11 @@ if (optional_param('action', '', PARAM_ALPHA) === 'export_text_report') {
     }
 }
 
-// عرض التحذيرات للطالب في الكويز المحدد
 if ($action === 'viewwarning' && $studentid && $cmid && $courseid) {
     $featuresimageurl = $OUTPUT->image_url('proctoring_pro_report_overview', 'quizaccess_proctoring');
     $profileimageurl = quizaccess_proctoring_get_image_url($studentid);
     $redirecturl = new moodle_url('/mod/quiz/accessrule/proctoring/upload_image.php', ['id' => $studentid]);
 
-    // فقط التحذيرات الخاصة بالطالب في الكويز المحدد
     $warnings = $DB->get_records('quizaccess_proctoring_warnings', [
         'courseid' => $courseid,
         'quizid' => $quiz->id,
